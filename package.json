@@ -1,0 +1,9 @@
+{
+  "name": "hls-channel-proxy",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Channel-based HLS gateway using warren-bank node-HLS-Proxy",
+  "dependencies": {
+    "@warren-bank/hls-proxy": "github:warren-bank/node-HLS-Proxy"
+  }
+}

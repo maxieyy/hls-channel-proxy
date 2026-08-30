@@ -1,0 +1,24 @@
+[Unit]
+Description=HLS segment proxy (hlsd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/hls-channel-proxy
+
+ExecStart=/opt/hls-channel-proxy/node_modules/.bin/hlsd \
+    --host 127.0.0.1 \
+    --port 8080 \
+    --origin "https://hamis.romponalis.st" \
+    --referer "https://hamis.romponalis.st/" \
+    --useragent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
