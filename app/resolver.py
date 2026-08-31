@@ -15,37 +15,13 @@ STREAM_PAGE_BASE = os.getenv(
     "https://dlstreams.st",
 ).rstrip("/")
 
-STREAM_PROVIDER_ORIGIN = os.getenv(
-    "STREAM_PROVIDER_ORIGIN",
-    "https://hamis.romponalis.st",
-).rstrip("/")
-
-STREAM_PROVIDER_REFERER = os.getenv(
-    "STREAM_PROVIDER_REFERER",
-    "https://hamis.romponalis.st/",
-)
-
-UPSTREAM_USER_AGENT = os.getenv(
-    "UPSTREAM_USER_AGENT",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/151.0.0.0 Safari/537.36",
-)
+STREAM_PROVIDER_ORIGIN = "https://hamis.romponalis.st"
+STREAM_PROVIDER_REFERER = "https://hamis.romponalis.st/"
 
 
 HLS_HEADERS = {
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.5",
     "Origin": STREAM_PROVIDER_ORIGIN,
     "Referer": STREAM_PROVIDER_REFERER,
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "cross-site",
-    "Sec-GPC": "1",
-    "User-Agent": UPSTREAM_USER_AGENT,
-    "sec-ch-ua": '"Not=A?Brand";v="99", "Brave";v="151", "Chromium";v="151"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
 }
 
 
