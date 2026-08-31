@@ -1,51 +1,84 @@
 # HLS Channel Proxy
 
-A small production-oriented HLS channel gateway built around `warren-bank/node-HLS-Proxy` (`hlsd`) and a Python resolver.
+A Python channel gateway plus `warren-bank/node-HLS-Proxy` (`hlsd`) for authorized HLS sources.
 
-> **Authorization:** Use this repository only with HLS sources, domains, and playback rights that you are authorized to proxy.
+> Use only with streams and domains you are authorized to proxy.
 
-## What it does
+## Public URL format
 
-The public API uses a simple channel-number URL:
+The public endpoint uses plain numeric channel IDs:
 
 ```text
 https://prod.example.com/38.m3u8
+https://prod.example.com/100.m3u8
 ```
 
-The browser never needs to know the current upstream token, timestamp, signed media URLs, or rotating segment hosts.
+No Base64 encoding is used for channel IDs.
 
-For every request to `/38.m3u8`, the gateway:
-
-1. Decodes the channel number from the URL path (no Base64 in the public URL).
-2. Runs the resolver for that channel.
-3. Fetches the current master playlist.
-4. Follows it to the current media playlist.
-5. Rewrites each media URI into a public `.ts` URL handled by `hlsd`.
-6. Returns the rewritten media playlist with CORS headers.
-7. `hlsd` fetches each segment from its current upstream URL using configured `Origin`, `Referer`, and User-Agent headers.
-
-The public architecture is:
+## Architecture
 
 ```text
-Browser
-   |
-   | HTTPS /38.m3u8
-   v
+Client
+  |
+  | HTTPS /38.m3u8
+  v
 Nginx :443
-   |
-   +---- *.m3u8 ----> channel-gateway :8090
-   |                       |
-   |                       +--> resolver.py
-   |                       |      |
-   |                       |      +--> fresh master
-   |                       |      +--> fresh media playlist
-   |                       |
-   |                       +--> rewritten public .ts URLs
-   |
-   +---- *.ts ----------> hlsd :8080
-                              |
-                              +--> current signed media URL
+  |
+  | all public requests
+  v
+channel gateway :8090
+  |
+  +--> /38.m3u8
+  |      |
+  |      +--> resolver.py
+  |             |
+  |             +--> stream page
+  |             +--> backend/player page
+  |             +--> fresh master playlist
+  |             +--> fresh media playlist
+  |
+  +--> /s/<short-token>.ts
+         |
+         +--> internal hlsd URL
+                |
+                v
+             hlsd :8080
+                |
+                +--> upstream media
+
+hlsd remains bound to 127.0.0.1 and is never exposed directly.
 ```
+
+## Why short segment tokens?
+
+Upstream live playlists may contain very long signed URLs. Exposing those URLs directly can create very long public paths and can also leak the signed object URL to the client.
+
+Instead, the gateway rewrites each media URI to a short opaque token:
+
+```text
+https://prod.example.com/s/Ab7K92xQ.ts
+```
+
+The gateway keeps the mapping in memory:
+
+```text
+Ab7K92xQ -> internal hlsd URL -> signed upstream URL
+```
+
+Mappings expire after 900 seconds by default.
+
+## Upstream headers
+
+For HLS/master/media requests handled by the resolver and for media requests handled by `hlsd`, the required upstream identity is:
+
+```http
+Origin: https://hamis.romponalis.st
+Referer: https://hamis.romponalis.st/
+```
+
+The `hlsd` systemd unit intentionally does not require a User-Agent because the tested upstream accepts Origin and Referer alone.
+
+The browser's arbitrary `Origin`, `Referer`, or `sec-*` headers are not blindly forwarded upstream.
 
 ## Repository layout
 
@@ -70,226 +103,129 @@ hls-channel-proxy/
 
 ## Requirements
 
-Recommended VPS baseline:
-
-- Ubuntu 22.04 or 24.04
-- Node.js 20+ or 22 LTS
+- Linux VPS
 - Python 3.10+
+- Node.js compatible with the `hlsd` dependency
 - Nginx
-- Certbot / Let's Encrypt
-- A VPS with enough network capacity for the stream bitrate and expected viewers
+- TLS certificate for the public hostname
 
-The proxy does not transcode media, so CPU and RAM requirements are modest. Network throughput is normally the limiting resource.
+The proxy does not transcode video. Network throughput is usually the main capacity constraint.
 
-## 1. Clone/install
+## Install
 
 ```bash
 sudo mkdir -p /opt/hls-channel-proxy
-sudo chown -R $USER:$USER /opt/hls-channel-proxy
 cd /opt/hls-channel-proxy
+git clone https://github.com/maxieyy/hls-channel-proxy.git .
 
-git clone YOUR_REPOSITORY_URL .
-```
-
-Install Python dependencies:
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-Install Node dependencies:
-
-```bash
 npm install
 ```
 
-## 2. Configure environment
-
-Copy:
-
-```bash
-cp .env.example .env
-```
-
-Example:
-
-```dotenv
-HOST=127.0.0.1
-GATEWAY_PORT=8090
-
-PUBLIC_HLS_URL=https://prod.example.com
-
-UPSTREAM_ORIGIN=https://hamis.romponalis.st
-UPSTREAM_REFERER=https://hamis.romponalis.st/
-UPSTREAM_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36
-
-STREAM_PAGE_BASE=https://dlstreams.st
-STREAM_PROVIDER_ORIGIN=https://hamis.romponalis.st
-STREAM_PROVIDER_REFERER=https://hamis.romponalis.st/
-
-RESOLVER_TIMEOUT=15
-```
-
-### Header behavior
-
-The resolver uses the provider-facing headers configured in `.env`.
-
-The Node `hlsd` process also receives the same `Origin`, `Referer`, and User-Agent values. The gateway does **not** forward arbitrary browser `sec-*` or `sec-fetch-*` headers.
-
-## 3. Install `hlsd`
-
-This project installs the upstream Node HLS proxy package as an npm dependency:
-
-```bash
-npm install
-```
-
-Verify:
-
-```bash
-./node_modules/.bin/hlsd --help
-```
-
-The expected package is `@warren-bank/hls-proxy`.
-
-## 4. Test the resolver
-
-Activate the virtual environment:
+## Test resolver
 
 ```bash
 source /opt/hls-channel-proxy/.venv/bin/activate
-```
-
-Run:
-
-```bash
 python3 -m app.resolver_test
 ```
 
-Or test directly from Python:
+Or:
 
 ```bash
 python3 - <<'PY'
 from app.resolver import get_stream
 
 result = get_stream("38")
-print(result["master_m3u8"])
-print(result["media_m3u8"])
+print("Master:", result["master_m3u8"])
+print("Media:", result["media_m3u8"])
 print(result["media_playlist"][:1000])
 PY
 ```
 
-A successful result should contain a current media playlist.
-
-## 5. Test the channel gateway
-
-Start it manually:
+## Test gateway
 
 ```bash
+cd /opt/hls-channel-proxy
 source .venv/bin/activate
 python3 server.py
 ```
 
-Then from another shell:
+In another shell:
 
 ```bash
 curl -v http://127.0.0.1:8090/38.m3u8
 ```
 
-Expected response:
+A successful playlist contains URLs resembling:
 
 ```text
-HTTP/1.1 200 OK
-Content-Type: application/vnd.apple.mpegurl
-Access-Control-Allow-Origin: *
+http://127.0.0.1:8090/s/<short-token>.ts
 ```
 
-The playlist should contain public URLs like:
+When accessed through the public hostname, the same URLs become:
 
 ```text
-https://prod.example.com/<encoded-upstream-segment>.ts
+https://prod.example.com/s/<short-token>.ts
 ```
 
-There should be **no** `127.0.0.1:8080` URLs in the playlist returned to the client.
+## Test hlsd
 
-## 6. Start hlsd
-
-For a manual test:
+The gateway uses `hlsd` internally for segment retrieval. Run it manually with:
 
 ```bash
 ./node_modules/.bin/hlsd \
   --host 127.0.0.1 \
   --port 8080 \
-  --origin "$UPSTREAM_ORIGIN" \
-  --referer "$UPSTREAM_REFERER" \
-  --useragent "$UPSTREAM_USER_AGENT" \
+  --origin "https://hamis.romponalis.st" \
+  --referer "https://hamis.romponalis.st/" \
   -v 3
 ```
 
-If the shell does not have the environment variables loaded, substitute their values directly.
+## Nginx
 
-## 7. Nginx
+The supplied Nginx configuration intentionally sends **everything** to port 8090. It does not route `.m3u8` to one service and `.ts` to another.
 
-Copy the supplied configuration:
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8090;
+    proxy_http_version 1.1;
 
-```bash
-sudo cp nginx/hls-proxy.conf /etc/nginx/sites-available/hls-proxy
-sudo ln -sf /etc/nginx/sites-available/hls-proxy /etc/nginx/sites-enabled/hls-proxy
-sudo nginx -t
-sudo systemctl reload nginx
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    proxy_set_header Range $http_range;
+    proxy_set_header If-Range $http_if_range;
+
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_connect_timeout 30s;
+
+    proxy_buffering off;
+    proxy_request_buffering off;
+}
 ```
 
-The HTTPS server routes:
+Do not add CORS headers in Nginx when using the supplied gateway; Flask is the single owner of the CORS response headers. This avoids duplicate headers such as:
 
 ```text
-*.m3u8 -> 127.0.0.1:8090
-*.ts   -> 127.0.0.1:8080
+Access-Control-Allow-Origin: *, *
 ```
 
-This separation is important: `/38.m3u8` must go to the resolver, while rewritten segment URLs must go to `hlsd`.
-
-## 8. TLS
-
-Make sure DNS points your domain at the VPS.
-
-Then install a certificate:
-
-```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d prod.example.com
-```
-
-Certbot will create/update the HTTPS server block. Make sure the `location` blocks from `nginx/hls-proxy.conf` are present in the final `443` server block.
-
-## 9. systemd
+## systemd
 
 Install the services:
 
 ```bash
 sudo cp systemd/hls-proxy.service /etc/systemd/system/
 sudo cp systemd/channel-gateway.service /etc/systemd/system/
-```
-
-Reload:
-
-```bash
 sudo systemctl daemon-reload
-```
-
-Enable:
-
-```bash
-sudo systemctl enable hls-proxy
-sudo systemctl enable channel-gateway
-```
-
-Start:
-
-```bash
-sudo systemctl start hls-proxy
-sudo systemctl start channel-gateway
+sudo systemctl enable --now hls-proxy
+sudo systemctl enable --now channel-gateway
 ```
 
 Check:
@@ -303,75 +239,27 @@ Logs:
 
 ```bash
 sudo journalctl -u hls-proxy -f
-```
-
-```bash
 sudo journalctl -u channel-gateway -f
 ```
 
-## 10. Public URL format
+## TLS with Certbot
 
-The public URL is now channel-based:
+Point DNS at the VPS, then:
 
-```text
-https://prod.example.com/38.m3u8
+```bash
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo certbot --nginx -d prod.example.com
 ```
 
-No Base64 channel encoding is necessary.
+Make sure the final HTTPS server block contains the `location /` proxy to `127.0.0.1:8090`.
 
-For channel 100:
+## Live-refresh behavior
 
-```text
-https://prod.example.com/100.m3u8
-```
+The gateway does not permanently store the current upstream master/media URL. Each `/38.m3u8` request resolves the channel again so rotating upstream tokens, timestamps, and signed media URLs can be refreshed.
 
-The public endpoint accepts decimal channel IDs only.
+Segment mappings are short-lived and in-memory. A restart clears them.
 
-## 11. Live-refresh behavior
-
-Do not permanently cache the resolved upstream media URL.
-
-The gateway resolves the channel on every playlist request. That is intentional for providers that rotate tokens, timestamps, or signed object-storage URLs.
-
-HLS clients normally request the live media playlist repeatedly. Each refresh therefore gets a current playlist with current media URLs.
-
-## 12. Signed URLs
-
-If the upstream media playlist contains signed URLs such as:
-
-```text
-https://storage.example/...?...X-Amz-Date=...&X-Amz-Expires=...&X-Amz-Signature=...
-```
-
-the gateway treats the URL as an opaque value and hands it to `hlsd`. The signature is not modified.
-
-## 13. Range requests
-
-`hlsd` is responsible for the actual media request and can preserve the media client's `Range` request behavior. Nginx should also leave the `Range` header intact for `.ts` requests.
-
-## 14. CORS
-
-The gateway and Nginx expose CORS headers suitable for a cross-origin HLS player.
-
-For production, replace `*` with your actual player origin if you want tighter access control.
-
-## 15. Security considerations
-
-This repository intentionally has a narrow public interface: only numeric channel paths are accepted.
-
-Do not turn the service into a generic:
-
-```text
-/?url=https://anything.example/...
-```
-
-proxy.
-
-The current design resolves known channel IDs through the configured resolver and keeps the HLS segment proxy behind your own public hostname.
-
-For stronger access control, add authentication/rate limiting at Nginx or your application layer.
-
-## 16. Monitoring
+## Diagnostics
 
 Check listeners:
 
@@ -379,100 +267,27 @@ Check listeners:
 sudo ss -lntp | grep -E ':8080|:8090|:80|:443'
 ```
 
-Check RAM/CPU:
+Expected local services:
 
-```bash
-free -h
-top
+```text
+127.0.0.1:8080  hlsd
+127.0.0.1:8090  channel gateway
 ```
 
-Check Nginx errors:
+Test the public manifest:
 
 ```bash
-sudo tail -f /var/log/nginx/error.log
+curl -vk https://prod.example.com/38.m3u8
 ```
 
-Check Nginx requests:
+Test the health endpoint:
 
 ```bash
-sudo tail -f /var/log/nginx/access.log
+curl -v http://127.0.0.1:8090/health
 ```
 
-## 17. Common failures
+## Security notes
 
-### `/38.m3u8` returns 502
+The public channel route accepts numeric IDs only. Do not convert this into an unrestricted `?url=` internet proxy.
 
-Check:
-
-```bash
-sudo journalctl -u channel-gateway -n 100 --no-pager
-```
-
-Then test:
-
-```bash
-curl -v http://127.0.0.1:8090/38.m3u8
-```
-
-### `.ts` requests fail
-
-Check that `hlsd` is alive:
-
-```bash
-sudo systemctl status hls-proxy
-```
-
-Then:
-
-```bash
-sudo journalctl -u hls-proxy -f
-```
-
-### Nginx returns 502
-
-Check:
-
-```bash
-sudo tail -n 50 /var/log/nginx/error.log
-```
-
-Then verify both local services:
-
-```bash
-curl -I http://127.0.0.1:8090/38.m3u8
-curl -I http://127.0.0.1:8080/
-```
-
-The latter may return `400`; that is still useful because it proves `hlsd` is reachable.
-
-### Stream URL/token expires
-
-This design intentionally resolves the channel again on each playlist refresh instead of storing the old upstream `.m3u8` permanently.
-
-## 18. Updating
-
-Pull application changes:
-
-```bash
-cd /opt/hls-channel-proxy
-git pull
-```
-
-Update dependencies:
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-npm install
-```
-
-Restart:
-
-```bash
-sudo systemctl restart hls-proxy
-sudo systemctl restart channel-gateway
-```
-
-## License
-
-The gateway code in this repository is provided under the MIT license in `LICENSE` if you add one. The upstream Node HLS proxy remains under its own license; see the upstream project's license file before redistributing it.
+The short-token store is intentionally in memory. For larger deployments, add explicit authentication, rate limiting, monitoring, and a shared state/cache only when required.
